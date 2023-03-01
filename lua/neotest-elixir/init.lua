@@ -3,29 +3,13 @@ local async = require("neotest.async")
 local lib = require("neotest.lib")
 local base = require("neotest-elixir.base")
 local logger = require("neotest.logging")
+local toggleterm = require("toggleterm")
+local toggleterm_terminal = require("toggleterm.terminal")
 
 ---@type neotest.Adapter
 local ElixirNeotestAdapter = { name = "neotest-elixir" }
 
 local default_formatters = { "NeotestElixir.Formatter" }
-
-local function get_extra_formatters()
-  return { "ExUnit.CLIFormatter" }
-end
-
-local function get_formatters()
-  -- tables need to be copied by value
-  local formatters = { unpack(default_formatters) }
-  vim.list_extend(formatters, get_extra_formatters())
-
-  local result = {}
-  for _, formatter in ipairs(formatters) do
-    table.insert(result, "--formatter")
-    table.insert(result, formatter)
-  end
-
-  return result
-end
 
 local function get_args(_)
   return {}
@@ -54,14 +38,6 @@ end
 
 local function get_write_delay()
   return 1000
-end
-
-local function get_mix_task()
-  return "test"
-end
-
-local function post_process_command(cmd)
-  return cmd
 end
 
 local function script_path()
@@ -215,22 +191,49 @@ function ElixirNeotestAdapter.discover_positions(path)
   return lib.treesitter.parse_positions(path, query, { position_id = position_id, build_position = build_position })
 end
 
-local function elixir_options(mix_task)
-  if mix_task == "test.interactive" then
-    return {
-      "-r",
-      mix_interactive_runner,
-      "-e",
-      "Application.put_env(:mix_test_interactive, :runner, NeotestElixir.TestInteractiveRunner)",
-    }
-  else
-    return {
-      "-r",
-      json_encoder,
-      "-r",
-      exunit_formatter,
-    }
+local MAGIC_TERM_NUMBER = 42
+
+local function get_or_create_iex_term()
+  -- generate a starting command for the iex terminal
+  local function iex_starting_command()
+    local json_encoder_path = vim.fn.expand("$HOME/.iex_unit/lib/json_encoder.ex")
+    local formatter_path = vim.fn.expand("$HOME/.iex_unit/lib/formatter.ex")
+    local runner_path = vim.fn.expand("$HOME/.iex_unit/lib/iex_unit.ex")
+    local start_code = "IExUnit.start()"
+    --[[ local configuration_code = string.format("ExUnit.configure(output_dir: %q)", output_dir) ]]
+    return string.format(
+      "MIX_ENV=test iex --no-pry -S mix run -r %q -r %q -r %q -e %q",
+      json_encoder_path,
+      formatter_path,
+      runner_path,
+      start_code
+    )
   end
+
+  local term = toggleterm_terminal.get(MAGIC_TERM_NUMBER)
+
+  if term == nil then
+    toggleterm.exec(iex_starting_command(), MAGIC_TERM_NUMBER, nil, nil, "horizontal")
+    term = toggleterm_terminal.get_or_create_term(MAGIC_TERM_NUMBER)
+    return term
+  else
+    return term
+  end
+end
+
+local function generate_seed()
+  local seed_str, _ = string.gsub(vim.fn.reltimestr(vim.fn.reltime()), "(%d+).(%d+)", "%1%2")
+  return tonumber(seed_str)
+end
+
+local function build_test_command(position, output_dir, seed)
+  return string.format("ExUnit.configure(output_dir: %q); IExUnit.run(%q, seed: %s)", output_dir, position.path, seed)
+end
+
+local function clear_results_file(results_path)
+  local x = io.open(results_path, "w")
+  x:write("")
+  x:close()
 end
 
 ---@async
@@ -238,38 +241,26 @@ end
 ---@return neotest.RunSpec
 function ElixirNeotestAdapter.build_spec(args)
   local position = args.tree:data()
-  local mix_task = get_mix_task()
-  local command = vim.tbl_flatten({
-    {
-      "elixir",
-    },
-    elixir_options(mix_task),
-    {
-      "-S",
-      "mix",
-      mix_task,
-    },
-    get_formatters(),
-    get_args(position),
-    args.extra_args or {},
-    get_args_from_position(position),
-  })
 
-  local post_processed_command = post_process_command(command)
+  -- custom output dir and use Formatter to write to file
   local output_dir = async.fn.tempname()
   Path:new(output_dir):mkdir()
   local results_path = output_dir .. "/results"
-  logger.debug("result path: " .. results_path)
-  local x = io.open(results_path, "w")
-  x:write("")
-  x:close()
+
+  local term = get_or_create_iex_term()
+  local seed = generate_seed()
+  test_command = build_test_command(position, output_dir, seed)
+  term:send(test_command, true)
+
+  logger.warn("result path: " .. results_path)
+  clear_results_file(results_path)
 
   local stream_data, stop_stream = lib.files.stream_lines(results_path)
-
   local write_delay = tostring(get_write_delay())
+  local watch_command = string.format("( tail -f -n 50 %s & ) | grep -q %s", results_path, seed)
 
   return {
-    command = post_processed_command,
+    command = watch_command,
     context = {
       position = position,
       results_path = results_path,
@@ -348,20 +339,6 @@ end
 
 setmetatable(ElixirNeotestAdapter, {
   __call = function(_, opts)
-    if opts.post_process_command and type(opts.post_process_command) == "function" then
-      post_process_command = opts.post_process_command
-    end
-
-    local mix_task = callable_opt(opts.mix_task)
-    if mix_task then
-      get_mix_task = mix_task
-    end
-
-    local extra_formatters = callable_opt(opts.extra_formatters)
-    if extra_formatters then
-      get_extra_formatters = extra_formatters
-    end
-
     local args = callable_opt(opts.args)
     if args then
       get_args = args
