@@ -36,6 +36,12 @@ local function get_args_from_position(position)
   end
 end
 
+local function get_line_number(position)
+  if position.type == "test" then
+    return position.range[1] + 1
+  end
+end
+
 local function get_write_delay()
   return 1000
 end
@@ -196,17 +202,16 @@ local MAGIC_TERM_NUMBER = 42
 local function get_or_create_iex_term()
   -- generate a starting command for the iex terminal
   local function iex_starting_command()
-    local json_encoder_path = vim.fn.expand("$HOME/.iex_unit/lib/json_encoder.ex")
-    local formatter_path = vim.fn.expand("$HOME/.iex_unit/lib/formatter.ex")
     local runner_path = vim.fn.expand("$HOME/.iex_unit/lib/iex_unit.ex")
     local start_code = "IExUnit.start()"
-    --[[ local configuration_code = string.format("ExUnit.configure(output_dir: %q)", output_dir) ]]
+    local configuration_code = "ExUnit.configure(formatters: [NeotestElixir.Formatter, ExUnit.CLIFormatter])"
     return string.format(
-      "MIX_ENV=test iex --no-pry -S mix run -r %q -r %q -r %q -e %q",
-      json_encoder_path,
-      formatter_path,
+      "MIX_ENV=test iex --no-pry -S mix run -r %q -r %q -r %q -e %q -e %q",
+      json_encoder,
+      exunit_formatter,
       runner_path,
-      start_code
+      start_code,
+      configuration_code
     )
   end
 
@@ -227,7 +232,18 @@ local function generate_seed()
 end
 
 local function build_test_command(position, output_dir, seed)
-  return string.format("ExUnit.configure(output_dir: %q); IExUnit.run(%q, seed: %s)", output_dir, position.path, seed)
+  local line_number = get_line_number(position)
+  if line_number then
+    return string.format(
+      "ExUnit.configure(output_dir: %q); IExUnit.run(%q, seed: %s, line: %s)",
+      output_dir,
+      position.path,
+      seed,
+      line_number
+    )
+  else
+    return string.format("ExUnit.configure(output_dir: %q); IExUnit.run(%q, seed: %s)", output_dir, position.path, seed)
+  end
 end
 
 local function clear_results_file(results_path)
@@ -249,10 +265,10 @@ function ElixirNeotestAdapter.build_spec(args)
 
   local term = get_or_create_iex_term()
   local seed = generate_seed()
-  test_command = build_test_command(position, output_dir, seed)
+  local test_command = build_test_command(position, output_dir, seed)
   term:send(test_command, true)
 
-  logger.warn("result path: " .. results_path)
+  logger.debug("result path: " .. results_path)
   clear_results_file(results_path)
 
   local stream_data, stop_stream = lib.files.stream_lines(results_path)
