@@ -202,7 +202,7 @@ local MAGIC_TERM_NUMBER = 42
 local function get_or_create_iex_term()
   -- generate a starting command for the iex terminal
   local function iex_starting_command()
-    local runner_path = vim.fn.expand("$HOME/.iex_unit/lib/iex_unit.ex")
+    local runner_path = (plugin_path / "neotest_elixir/iex-unit/lib/iex_unit.ex").filename
     local start_code = "IExUnit.start()"
     local configuration_code = "ExUnit.configure(formatters: [NeotestElixir.Formatter, ExUnit.CLIFormatter])"
     return string.format(
