@@ -2,48 +2,30 @@ local Path = require("plenary.path")
 local async = require("neotest.async")
 local lib = require("neotest.lib")
 local base = require("neotest-elixir.base")
+local core = require("neotest-elixir.core")
 local logger = require("neotest.logging")
-local toggleterm = require("toggleterm")
-local toggleterm_terminal = require("toggleterm.terminal")
 
 ---@type neotest.Adapter
 local ElixirNeotestAdapter = { name = "neotest-elixir" }
 
-local default_formatters = { "NeotestElixir.Formatter" }
+local function get_extra_formatters()
+  return { "ExUnit.CLIFormatter" }
+end
 
-local function get_args(_)
+local function get_mix_test_args()
   return {}
-end
-
----@param position neotest.Position
----@return string[]
-local function get_args_from_position(position)
-  local root = ElixirNeotestAdapter.root(position.path)
-  local path = Path:new(position.path)
-  local relative = path:make_relative(root)
-
-  if position.type == "dir" then
-    if relative == "." then
-      return {}
-    else
-      return { relative }
-    end
-  elseif position.type == "file" then
-    return { relative }
-  else
-    local line = position.range[1] + 1
-    return { relative .. ":" .. line }
-  end
-end
-
-local function get_line_number(position)
-  if position.type == "test" then
-    return position.range[1] + 1
-  end
 end
 
 local function get_write_delay()
   return 1000
+end
+
+local function get_mix_task()
+  return "test"
+end
+
+local function post_process_command(cmd)
+  return cmd
 end
 
 local function script_path()
@@ -80,11 +62,6 @@ function ElixirNeotestAdapter._generate_id(position, parents)
     )
   end
 end
-
-local plugin_path = Path.new(script_path()):parent():parent()
-local json_encoder = (plugin_path / "neotest_elixir/json_encoder.ex").filename
-local exunit_formatter = (plugin_path / "neotest_elixir/formatter.ex").filename
-local mix_interactive_runner = (plugin_path / "neotest_elixir/test_interactive_runner.ex").filename
 
 ElixirNeotestAdapter.root = lib.files.match_root_pattern("mix.exs")
 
@@ -197,86 +174,37 @@ function ElixirNeotestAdapter.discover_positions(path)
   return lib.treesitter.parse_positions(path, query, { position_id = position_id, build_position = build_position })
 end
 
-local MAGIC_TERM_NUMBER = 42
-
-local function get_or_create_iex_term()
-  -- generate a starting command for the iex terminal
-  local function iex_starting_command()
-    local runner_path = (plugin_path / "neotest_elixir/iex-unit/lib/iex_unit.ex").filename
-    local start_code = "IExUnit.start()"
-    local configuration_code = "ExUnit.configure(formatters: [NeotestElixir.Formatter, ExUnit.CLIFormatter])"
-    return string.format(
-      "MIX_ENV=test iex --no-pry -S mix run -r %q -r %q -r %q -e %q -e %q",
-      json_encoder,
-      exunit_formatter,
-      runner_path,
-      start_code,
-      configuration_code
-    )
-  end
-
-  local term = toggleterm_terminal.get(MAGIC_TERM_NUMBER)
-
-  if term == nil then
-    toggleterm.exec(iex_starting_command(), MAGIC_TERM_NUMBER, nil, nil, "horizontal")
-    term = toggleterm_terminal.get_or_create_term(MAGIC_TERM_NUMBER)
-    return term
-  else
-    return term
-  end
-end
-
-local function generate_seed()
-  local seed_str, _ = string.gsub(vim.fn.reltimestr(vim.fn.reltime()), "(%d+).(%d+)", "%1%2")
-  return tonumber(seed_str)
-end
-
-local function build_test_command(position, output_dir, seed)
-  local line_number = get_line_number(position)
-  if line_number then
-    return string.format(
-      "ExUnit.configure(output_dir: %q); IExUnit.run(%q, seed: %s, line: %s)",
-      output_dir,
-      position.path,
-      seed,
-      line_number
-    )
-  else
-    return string.format("ExUnit.configure(output_dir: %q); IExUnit.run(%q, seed: %s)", output_dir, position.path, seed)
-  end
-end
-
-local function clear_results_file(results_path)
-  local x = io.open(results_path, "w")
-  x:write("")
-  x:close()
-end
-
 ---@async
 ---@param args neotest.RunArgs
 ---@return neotest.RunSpec
 function ElixirNeotestAdapter.build_spec(args)
   local position = args.tree:data()
 
-  -- custom output dir and use Formatter to write to file
+  -- create the results directory and empty file
   local output_dir = async.fn.tempname()
   Path:new(output_dir):mkdir()
   local results_path = output_dir .. "/results"
-
-  local term = get_or_create_iex_term()
-  local seed = generate_seed()
-  local test_command = build_test_command(position, output_dir, seed)
-  term:send(test_command, true)
-
   logger.debug("result path: " .. results_path)
-  clear_results_file(results_path)
+  core.clear_results(results_path)
+
+  local post_processing_command
+  if args.strategy == "iex" then
+    local MAGIC_IEX_TERM_ID = 42
+    local term = core.get_or_create_iex_term(MAGIC_IEX_TERM_ID)
+    local seed = core.generate_seed()
+    local test_command = core.build_iex_test_command(position, output_dir, seed)
+    term:send(test_command, true)
+    post_processing_command = core.iex_watch_command(results_path, seed)
+  else
+    local command = core.build_mix_command(position, args, get_mix_task, get_extra_formatters, get_mix_test_args)
+    post_processing_command = post_process_command(command)
+  end
 
   local stream_data, stop_stream = lib.files.stream_lines(results_path)
   local write_delay = tostring(get_write_delay())
-  local watch_command = string.format("( tail -f -n 50 %s & ) | grep -q %s", results_path, seed)
 
   return {
-    command = watch_command,
+    command = post_processing_command,
     context = {
       position = position,
       results_path = results_path,
@@ -303,7 +231,7 @@ function ElixirNeotestAdapter.build_spec(args)
     env = {
       NEOTEST_OUTPUT_DIR = output_dir,
       NEOTEST_WRITE_DELAY = write_delay,
-      NEOTEST_PLUGIN_PATH = tostring(plugin_path),
+      NEOTEST_PLUGIN_PATH = tostring(core.plugin_path),
     },
   }
 end
@@ -355,9 +283,23 @@ end
 
 setmetatable(ElixirNeotestAdapter, {
   __call = function(_, opts)
+    if opts.post_process_command and type(opts.post_process_command) == "function" then
+      post_process_command = opts.post_process_command
+    end
+
+    local mix_task = callable_opt(opts.mix_task)
+    if mix_task then
+      get_mix_task = mix_task
+    end
+
+    local extra_formatters = callable_opt(opts.extra_formatters)
+    if extra_formatters then
+      get_extra_formatters = extra_formatters
+    end
+
     local args = callable_opt(opts.args)
     if args then
-      get_args = args
+      get_mix_test_args = args
     end
 
     local write_delay = callable_opt(opts.write_delay)
