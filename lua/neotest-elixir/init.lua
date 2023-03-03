@@ -184,8 +184,10 @@ function ElixirNeotestAdapter.build_spec(args)
   local output_dir = async.fn.tempname()
   Path:new(output_dir):mkdir()
   local results_path = output_dir .. "/results"
+  local maybe_compile_error_path = output_dir .. "/compile_error"
   logger.debug("result path: " .. results_path)
-  core.clear_results(results_path)
+  core.create_and_clear(results_path)
+  core.create_and_clear(maybe_compile_error_path)
 
   local post_processing_command
   if args.strategy == "iex" then
@@ -194,7 +196,7 @@ function ElixirNeotestAdapter.build_spec(args)
     local seed = core.generate_seed()
     local test_command = core.build_iex_test_command(position, output_dir, seed)
     term:send(test_command, true)
-    post_processing_command = core.iex_watch_command(results_path, seed)
+    post_processing_command = core.iex_watch_command(results_path, maybe_compile_error_path, seed)
   else
     local command = core.build_mix_command(position, args, get_mix_task, get_extra_formatters, get_mix_test_args)
     post_processing_command = post_process_command(command)

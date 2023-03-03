@@ -1,7 +1,18 @@
 local core = require("neotest-elixir.core")
 
 describe("build_iex_test_command", function()
+  local relative_to
+
+  before_each(function()
+    -- always return the input
+    relative_to = function(path)
+      return path
+    end
+  end)
+
   it("should return the correct command for a test", function()
+    -- always return the input
+
     local position = {
       type = "test",
       path = "example_test.exs",
@@ -10,12 +21,9 @@ describe("build_iex_test_command", function()
     local output_dir = "test_output"
     local seed = 1234
 
-    local actual = core.build_iex_test_command(position, output_dir, seed)
+    local actual = core.build_iex_test_command(position, output_dir, seed, relative_to)
 
-    assert.are.equal(
-      'ExUnit.configure(output_dir: "test_output"); IExUnit.run("example_test.exs", seed: 1234, line: 2)',
-      actual
-    )
+    assert.are.equal('IExUnit.run("example_test.exs", line: 2, seed: 1234, output_dir: "test_output")', actual)
   end)
 
   it("should return the correct command for a file", function()
@@ -27,12 +35,9 @@ describe("build_iex_test_command", function()
     local output_dir = "test_output"
     local seed = 1234
 
-    local actual = core.build_iex_test_command(position, output_dir, seed)
+    local actual = core.build_iex_test_command(position, output_dir, seed, relative_to)
 
-    assert.are.equal(
-      'ExUnit.configure(output_dir: "test_output"); IExUnit.run("test/neotest_elixir/core_spec.exs", seed: 1234)',
-      actual
-    )
+    assert.are.equal('IExUnit.run("test/neotest_elixir/core_spec.exs", seed: 1234, output_dir: "test_output")', actual)
   end)
 
   it("should return the correct command for the folder", function()
@@ -44,10 +49,22 @@ describe("build_iex_test_command", function()
     local output_dir = "test_output"
     local seed = 1234
 
-    local actual = core.build_iex_test_command(position, output_dir, seed)
+    local actual = core.build_iex_test_command(position, output_dir, seed, relative_to)
+
+    assert.are.equal('IExUnit.run("test/neotest_elixir", seed: 1234, output_dir: "test_output")', actual)
+  end)
+end)
+
+describe("iex_watch_command", function()
+  it("should return the correct command", function()
+    local results_path = "results_path"
+    local maybe_compile_error_path = "maybe_compile_error_path"
+    local seed = 1234
+
+    local actual = core.iex_watch_command(results_path, maybe_compile_error_path, seed)
 
     assert.are.equal(
-      'ExUnit.configure(output_dir: "test_output"); IExUnit.run("test/neotest_elixir", seed: 1234)',
+      "(tail -n 50 -f results_path maybe_compile_error_path &) | grep -q 1234 && cat maybe_compile_error_path",
       actual
     )
   end)

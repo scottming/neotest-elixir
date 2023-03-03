@@ -6,8 +6,18 @@ local logger = require("neotest.logging")
 
 local M = {}
 
+local function relative_to_cwd(path)
+  local root = lib.files.match_root_pattern("mix.exs")(path)
+  return Path:new(path):make_relative(root)
+end
+
 -- Build the command to send to the IEx shell for running the test
-function M.build_iex_test_command(position, output_dir, seed)
+function M.build_iex_test_command(position, output_dir, seed, relative_to)
+  if not relative_to then
+    relative_to = relative_to_cwd
+  end
+  local relative_path = relative_to(position.path)
+
   local function get_line_number()
     if position.type == "test" then
       return position.range[1] + 1
@@ -17,19 +27,26 @@ function M.build_iex_test_command(position, output_dir, seed)
   local line_number = get_line_number()
   if line_number then
     return string.format(
-      "ExUnit.configure(output_dir: %q); IExUnit.run(%q, seed: %s, line: %s)",
-      output_dir,
-      position.path,
+      "IExUnit.run(%q, line: %s, seed: %s, output_dir: %q)",
+      relative_path,
+      line_number,
       seed,
-      line_number
+      output_dir
     )
   else
-    return string.format("ExUnit.configure(output_dir: %q); IExUnit.run(%q, seed: %s)", output_dir, position.path, seed)
+    return string.format("IExUnit.run(%q, seed: %s, output_dir: %q)", position.path, seed, output_dir)
   end
 end
 
-function M.iex_watch_command(results_path, seed)
-  return string.format("( tail -f -n 50 %s & ) | grep -q %s", results_path, seed)
+function M.iex_watch_command(results_path, maybe_compile_error_path, seed)
+  -- the `&& cat maybe_compile_error_path` just for the case where encountering a compile error
+  return string.format(
+    "(tail -n 50 -f %s %s &) | grep -q %s && cat %s",
+    results_path,
+    maybe_compile_error_path,
+    seed,
+    maybe_compile_error_path
+  )
 end
 
 local function build_formatters(extra_formatters)
@@ -167,8 +184,8 @@ function M.generate_seed()
   return tonumber(seed_str)
 end
 
-function M.clear_results(results_path)
-  local x = io.open(results_path, "w")
+function M.create_and_clear(path)
+  local x = io.open(path, "w")
   x:write("")
   x:close()
 end
