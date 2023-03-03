@@ -2,7 +2,6 @@ local lib = require("neotest.lib")
 local Path = require("plenary.path")
 local toggleterm = require("toggleterm")
 local toggleterm_terminal = require("toggleterm.terminal")
-local logger = require("neotest.logging")
 
 local M = {}
 
